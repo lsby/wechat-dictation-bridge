@@ -1,0 +1,96 @@
+name: Release on version change
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - WechatDictationProbe.csproj
+      - Program.cs
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Read project version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$project = Get-Content -LiteralPath .\WechatDictationProbe.csproj
+          $version = [string]$project.Project.PropertyGroup.Version
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw 'Version is missing from WechatDictationProbe.csproj.'
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Unsupported version format: $version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+
+      - name: Check whether this version is already released
+        id: existing
+        shell: pwsh
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git ls-remote --exit-code --tags origin "refs/tags/$env:TAG" | Out-Null
+          $exists = $LASTEXITCODE -eq 0
+          "exists=$($exists.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          exit 0
+
+      - name: Set up .NET
+        if: steps.existing.outputs.exists != 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Publish Windows x64 single-file app
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          dotnet publish .\WechatDictationProbe.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            --output .\publish
+
+          New-Item -ItemType Directory -Path .\artifacts -Force | Out-Null
+          $assetName = "wechat-dictation-bridge-v$env:VERSION-win-x64.exe"
+          Copy-Item -LiteralPath '.\publish\微信听写可行性测试器.exe' -Destination ".\artifacts\$assetName"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath ".\artifacts\$assetName").Hash.ToLowerInvariant()
+          "$hash  $assetName" | Set-Content -LiteralPath ".\artifacts\$assetName.sha256" -Encoding ascii
+
+      - name: Create GitHub release
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create $env:TAG `
+            .\artifacts\wechat-dictation-bridge-v$env:VERSION-win-x64.exe `
+            .\artifacts\wechat-dictation-bridge-v$env:VERSION-win-x64.exe.sha256 `
+            --target $env:GITHUB_SHA `
+            --title "Dictation Bridge $env:TAG" `
+            --generate-notes
+
+      - name: Report existing release
+        if: steps.existing.outputs.exists == 'true'
+        shell: pwsh
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: Write-Host "$env:TAG already exists; no release was created."

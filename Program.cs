@@ -47,7 +47,7 @@ internal sealed class ProbeForm : Form
 
     public ProbeForm()
     {
-        Text = "微信听写可行性测试器";
+        Text = $"微信听写可行性测试器 v{Application.ProductVersion}";
         StartPosition = FormStartPosition.CenterScreen;
         Width = 720;
         Height = 520;
