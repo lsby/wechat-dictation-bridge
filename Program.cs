@@ -30,15 +30,6 @@ internal sealed class ProbeForm : Form
     private const int VkLeftWin = 0x5B;
     private const int InputKeyboard = 1;
     private const uint KeyEventUp = 0x0002;
-    private const int WmHotkey = 0x0312;
-    private const int BridgeHotkeyId = 0x5744;
-    private const uint ModAlt = 0x0001;
-    private const uint ModControl = 0x0002;
-    private const uint ModShift = 0x0004;
-    private const uint ModNoRepeat = 0x4000;
-    private const uint VkF8 = 0x77;
-    private const uint VkF9 = 0x78;
-    private const uint VkF10 = 0x79;
     private const int SwRestore = 9;
 
     private readonly TextBox _captureBox;
@@ -48,10 +39,8 @@ internal sealed class ProbeForm : Form
     private readonly FloatingTalkForm _floatingTalkForm;
     private bool _shortcutHeld;
     private bool _bridgeRecording;
-    private bool _hotkeyRegistered;
     private DateTime _lastTextChange;
     private IntPtr _bridgeTargetWindow;
-    private string _bridgeHotkeyDisplay = "未注册";
     private string _bridgeTargetDescription = "尚未记录目标";
 
     public ProbeForm()
@@ -198,84 +187,8 @@ internal sealed class ProbeForm : Form
         base.OnShown(e);
         _captureBox.Focus();
         _floatingTalkForm.Show();
-        _hotkeyRegistered = TryRegisterBridgeHotkey();
-        if (_hotkeyRegistered)
-        {
-            _status.Text = $"就绪：全局热键 {_bridgeHotkeyDisplay} 或按住右上角悬浮按钮听写。";
-            _status.ForeColor = Color.DarkGreen;
-        }
-        else
-        {
-            _status.Text = "热键注册失败，请直接使用右上角绿色悬浮按钮听写。";
-            _status.ForeColor = Color.DarkOrange;
-        }
-    }
-
-    private bool TryRegisterBridgeHotkey()
-    {
-        var candidates = new (uint Modifiers, uint Key, string Display)[]
-        {
-            (ModControl | ModAlt | ModNoRepeat, VkF9, "Ctrl+Alt+F9"),
-            (ModControl | ModShift | ModNoRepeat, VkF9, "Ctrl+Shift+F9"),
-            (ModControl | ModAlt | ModShift | ModNoRepeat, VkF9, "Ctrl+Alt+Shift+F9"),
-            (ModControl | ModAlt | ModNoRepeat, VkF10, "Ctrl+Alt+F10"),
-            (ModControl | ModShift | ModNoRepeat, VkF10, "Ctrl+Shift+F10"),
-            (ModNoRepeat, VkF8, "F8")
-        };
-
-        foreach (var candidate in candidates)
-        {
-            if (!RegisterHotKey(Handle, BridgeHotkeyId, candidate.Modifiers, candidate.Key))
-                continue;
-
-            _bridgeHotkeyDisplay = candidate.Display;
-            return true;
-        }
-
-        return false;
-    }
-
-    protected override void WndProc(ref Message message)
-    {
-        if (message.Msg == WmHotkey && message.WParam.ToInt32() == BridgeHotkeyId)
-        {
-            ToggleRemoteBridge();
-            return;
-        }
-
-        base.WndProc(ref message);
-    }
-
-    private void ToggleRemoteBridge()
-    {
-        if (_bridgeRecording)
-        {
-            StopBridgeRecording();
-            return;
-        }
-
-        var foreground = GetForegroundWindow();
-        if (foreground == IntPtr.Zero || foreground == Handle)
-        {
-            _status.Text = $"请先切换到远控窗口，并在远端输入框点出光标，再按 {_bridgeHotkeyDisplay}。";
-            _status.ForeColor = Color.DarkRed;
-            return;
-        }
-
-        _bridgeTargetWindow = foreground;
-        _bridgeTargetDescription = DescribeWindow(foreground);
-        Activate();
-        _captureBox.Focus();
-        _captureBox.Clear();
-        Application.DoEvents();
-        BeginWechatShortcut();
-        _bridgeRecording = _shortcutHeld;
-
-        if (_bridgeRecording)
-        {
-            _status.Text = $"桥接录音中：请说话，结束时再按一次 {_bridgeHotkeyDisplay}。";
-            _status.ForeColor = Color.DarkBlue;
-        }
+        _status.Text = "就绪：按住屏幕上的悬浮按钮开始说话。";
+        _status.ForeColor = Color.FromArgb(5, 150, 105);
     }
 
     private void StartCaptureFromFloatingButton()
@@ -495,11 +408,6 @@ internal sealed class ProbeForm : Form
     private void OnFormClosing(object? sender, CancelEventArgs e)
     {
         _floatingTalkForm.Close();
-        if (_hotkeyRegistered)
-        {
-            UnregisterHotKey(Handle, BridgeHotkeyId);
-            _hotkeyRegistered = false;
-        }
 
         if (!_shortcutHeld) return;
         SendKeyboardInputs(
@@ -529,14 +437,6 @@ internal sealed class ProbeForm : Form
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint numberOfInputs, INPUT[] inputs, int sizeOfInputStructure);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool RegisterHotKey(IntPtr windowHandle, int id, uint modifiers, uint virtualKey);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool UnregisterHotKey(IntPtr windowHandle, int id);
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
