@@ -14,25 +14,45 @@ internal static class AppUpdater
     private const string ReleasesPageUrl = $"https://github.com/{RepoOwner}/{RepoName}/releases";
 
     /// <summary>
-    /// 在程序启动时尝试清理上次遗留的旧版本备份文件（.bak）。
+    /// 在程序启动后后台延时清理上次遗留的旧版本备份文件（.bak）。
     /// </summary>
     public static void CleanupOldBackups()
     {
-        try
+        Task.Run(async () =>
         {
-            var currentExe = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(currentExe)) return;
+            // 等待 1.5 秒，让老进程彻底退出并释放文件占用
+            await Task.Delay(1500);
 
-            var backupExe = currentExe + ".bak";
-            if (File.Exists(backupExe))
+            try
             {
-                File.Delete(backupExe);
+                var appDir = AppContext.BaseDirectory;
+                if (!Directory.Exists(appDir)) return;
+
+                var bakFiles = Directory.GetFiles(appDir, "*.bak");
+                foreach (var bakFile in bakFiles)
+                {
+                    for (int retry = 0; retry < 5; retry++)
+                    {
+                        try
+                        {
+                            if (File.Exists(bakFile))
+                            {
+                                File.Delete(bakFile);
+                            }
+                            break;
+                        }
+                        catch
+                        {
+                            await Task.Delay(500);
+                        }
+                    }
+                }
             }
-        }
-        catch
-        {
-            // 忽略清理失败（可能是刚启动尚未释放锁或权限问题）
-        }
+            catch
+            {
+                // 忽略清理异常
+            }
+        });
     }
 
     /// <summary>
@@ -117,12 +137,12 @@ internal static class AppUpdater
                     var name = asset.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
                     var url = asset.TryGetProperty("browser_download_url", out var u) ? u.GetString() ?? "" : "";
 
-                    if (name.EndsWith("-win-x64.exe", StringComparison.OrdinalIgnoreCase))
+                    if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                     {
                         downloadUrl = url;
                         assetName = name;
                     }
-                    else if (name.EndsWith("-win-x64.exe.sha256", StringComparison.OrdinalIgnoreCase))
+                    else if (name.EndsWith(".exe.sha256", StringComparison.OrdinalIgnoreCase))
                     {
                         sha256Url = url;
                     }
@@ -265,6 +285,9 @@ internal static class AppUpdater
             progressDialog.UpdateStatus("下载校验完成，准备应用更新...");
 
             // 3. 执行重命名备份与替换
+            // 规范化目标可执行文件名：统一为无版本号的标准文件名 (wechat-dictation-bridge.exe)
+            var targetExe = Path.Combine(appDir, "wechat-dictation-bridge.exe");
+
             // 先尝试移除已有的 .bak 备份
             if (File.Exists(backupExe))
             {
@@ -274,9 +297,18 @@ internal static class AppUpdater
                 }
                 catch
                 {
-                    // 若 .bak 被占用，尝试随机生成备份文件名
                     backupExe = $"{currentExe}.{DateTime.Now:yyyyMMddHHmmss}.bak";
                 }
+            }
+
+            // 如果 targetExe 存在且与当前进程不同，先清理 targetExe 避免冲突
+            if (!string.Equals(targetExe, currentExe, StringComparison.OrdinalIgnoreCase) && File.Exists(targetExe))
+            {
+                try
+                {
+                    File.Delete(targetExe);
+                }
+                catch { }
             }
 
             // 将当前正在运行的 exe 重命名为 .bak
@@ -284,8 +316,8 @@ internal static class AppUpdater
 
             try
             {
-                // 将下载的 tmp 文件重命名为当前 exe
-                File.Move(tempFile, currentExe);
+                // 将下载的 tmp 文件重命名为标准 targetExe
+                File.Move(tempFile, targetExe);
             }
             catch (Exception ex)
             {
@@ -301,7 +333,7 @@ internal static class AppUpdater
             progressDialog.UpdateStatus("更新成功！正在重启启动新版本...");
             Process.Start(new ProcessStartInfo
             {
-                FileName = currentExe,
+                FileName = targetExe,
                 UseShellExecute = true
             });
 
