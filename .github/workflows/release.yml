@@ -6,7 +6,7 @@ on:
       - main
     paths:
       - WechatDictationProbe.csproj
-      - Program.cs
+      - '**.cs'
       - .github/workflows/release.yml
   workflow_dispatch:
 
@@ -69,7 +69,8 @@ jobs:
 
           New-Item -ItemType Directory -Path .\artifacts -Force | Out-Null
           $assetName = "wechat-dictation-bridge-v$env:VERSION-win-x64.exe"
-          Copy-Item -LiteralPath '.\publish\微信听写可行性测试器.exe' -Destination ".\artifacts\$assetName"
+          $publishExe = (Get-ChildItem -Path .\publish -Filter *.exe | Select-Object -First 1).FullName
+          Copy-Item -LiteralPath $publishExe -Destination ".\artifacts\$assetName"
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath ".\artifacts\$assetName").Hash.ToLowerInvariant()
           "$hash  $assetName" | Set-Content -LiteralPath ".\artifacts\$assetName.sha256" -Encoding ascii
 

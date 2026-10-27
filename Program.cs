@@ -9,8 +9,17 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
-        ApplicationConfiguration.Initialize();
-        Application.Run(new ProbeForm());
+        try
+        {
+            AppUpdater.CleanupOldBackups();
+            ApplicationConfiguration.Initialize();
+            Application.Run(new ProbeForm());
+        }
+        catch (Exception ex)
+        {
+            File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "crash.log"), ex.ToString());
+            MessageBox.Show(ex.ToString(), "启动异常");
+        }
     }
 }
 
@@ -37,6 +46,7 @@ internal sealed class ProbeForm : Form
     private readonly Label _stats;
     private readonly Button _holdButton;
     private readonly FloatingTalkForm _floatingTalkForm;
+    private readonly TrayController _trayController;
     private bool _shortcutHeld;
     private bool _bridgeRecording;
     private bool _hotkeyRegistered;
@@ -47,7 +57,7 @@ internal sealed class ProbeForm : Form
 
     public ProbeForm()
     {
-        Text = $"微信听写可行性测试器 v{Application.ProductVersion}";
+        Text = $"微信语音桥 v{Application.ProductVersion}";
         StartPosition = FormStartPosition.CenterScreen;
         Width = 720;
         Height = 520;
@@ -108,6 +118,7 @@ internal sealed class ProbeForm : Form
         };
 
         _floatingTalkForm = new FloatingTalkForm(StartCaptureFromFloatingButton, StopBridgeRecording, ShowDashboard);
+        _trayController = new TrayController(this);
 
         _holdButton = new Button
         {
@@ -518,6 +529,7 @@ internal sealed class ProbeForm : Form
 
     private void OnFormClosing(object? sender, CancelEventArgs e)
     {
+        _trayController.Dispose();
         _floatingTalkForm.Close();
         if (_hotkeyRegistered)
         {
