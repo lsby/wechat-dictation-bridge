@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -44,9 +45,7 @@ internal sealed class ProbeForm : Form
     private readonly Label _instructions;
     private readonly Label _status;
     private readonly Label _stats;
-    private readonly Button _holdButton;
     private readonly FloatingTalkForm _floatingTalkForm;
-    private readonly TrayController _trayController;
     private bool _shortcutHeld;
     private bool _bridgeRecording;
     private bool _hotkeyRegistered;
@@ -59,43 +58,64 @@ internal sealed class ProbeForm : Form
     {
         Text = $"微信语音桥 v{Application.ProductVersion}";
         StartPosition = FormStartPosition.CenterScreen;
-        Width = 720;
-        Height = 520;
-        MinimumSize = new Size(620, 430);
+        Width = 620;
+        Height = 440;
+        MinimumSize = new Size(500, 320);
+        MinimizeBox = false;
         Font = new Font("Microsoft YaHei UI", 10F);
+        BackColor = Color.FromArgb(246, 248, 250);
         FormClosing += OnFormClosing;
+
+        var topPanel = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 46,
+            Padding = new Padding(16, 12, 16, 6),
+            BackColor = Color.FromArgb(246, 248, 250)
+        };
 
         _instructions = new Label
         {
             AutoSize = false,
-            Dock = DockStyle.Top,
-            Height = 132,
-            Padding = new Padding(14, 12, 14, 4),
-            Text = "用途：验证微信语音输入能否把识别结果写入我们控制的文本框。\r\n" +
-                   "测试 A：在下方按钮上按住鼠标说话，松开结束；程序会模拟 Ctrl+Win。\r\n" +
-                   "测试 B：若 A 没唤起微信，点“仅聚焦接收框”，再亲自按住 Ctrl+Win 说话。\r\n" +
-                   "远控桥接：启动后会自动选择一个可用热键；先在远端输入框点出光标，按一次开始，再按一次结束。"
+            Dock = DockStyle.Fill,
+            Text = "使用说明：在远控或输入框点出光标，按住悬浮按钮说话（可拖拽换位），松开自动回填。",
+            Font = new Font("Microsoft YaHei UI", 9.5F),
+            ForeColor = Color.FromArgb(75, 85, 99)
+        };
+        topPanel.Controls.Add(_instructions);
+
+        var bottomPanel = new Panel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 72,
+            Padding = new Padding(16, 8, 16, 10),
+            BackColor = Color.FromArgb(240, 242, 245)
         };
 
         _status = new Label
         {
             AutoSize = false,
-            Dock = DockStyle.Bottom,
-            Height = 35,
-            Padding = new Padding(14, 7, 14, 4),
+            Dock = DockStyle.Top,
+            Height = 28,
             Text = "等待测试。请先确认电脑版微信正在运行。",
-            ForeColor = Color.DarkSlateGray
+            Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
+            ForeColor = Color.FromArgb(31, 41, 55),
+            AutoEllipsis = true
         };
 
         _stats = new Label
         {
             AutoSize = false,
             Dock = DockStyle.Bottom,
-            Height = 32,
-            Padding = new Padding(14, 4, 14, 7),
+            Height = 24,
             Text = "尚未收到文字。",
-            ForeColor = Color.DimGray
+            Font = new Font("Microsoft YaHei UI", 9F),
+            ForeColor = Color.FromArgb(107, 114, 128),
+            AutoEllipsis = true
         };
+
+        bottomPanel.Controls.Add(_status);
+        bottomPanel.Controls.Add(_stats);
 
         _captureBox = new TextBox
         {
@@ -103,126 +123,74 @@ internal sealed class ProbeForm : Form
             ScrollBars = ScrollBars.Vertical,
             AcceptsReturn = true,
             Dock = DockStyle.Fill,
-            Margin = new Padding(14),
-            Font = new Font("Microsoft YaHei UI", 14F),
+            Font = new Font("Microsoft YaHei UI", 13F),
+            BackColor = Color.White,
+            ForeColor = Color.FromArgb(17, 24, 39),
+            BorderStyle = BorderStyle.FixedSingle,
             AccessibleName = "微信听写结果接收框"
         };
         _captureBox.TextChanged += (_, _) =>
         {
             _lastTextChange = DateTime.Now;
-            _stats.Text = $"已收到 {_captureBox.TextLength} 个字符；最后变化：{_lastTextChange:HH:mm:ss.fff}；目标：{_bridgeTargetDescription}";
+            _stats.Text = $"已收到 {_captureBox.TextLength} 个字符 ｜ 最后变化：{_lastTextChange:HH:mm:ss.fff} ｜ 目标：{_bridgeTargetDescription}";
             _status.Text = _captureBox.TextLength > 0
-                ? "成功：文本已经进入自有控件，可以直接读取 TextBox.Text。"
+                ? "识别成功：文字已同步进入接收框"
                 : "接收框已清空。";
-            _status.ForeColor = _captureBox.TextLength > 0 ? Color.DarkGreen : Color.DarkSlateGray;
+            _status.ForeColor = _captureBox.TextLength > 0 ? Color.FromArgb(5, 150, 105) : Color.FromArgb(75, 85, 99);
+            _captureBox.SelectionStart = _captureBox.TextLength;
+            _captureBox.ScrollToCaret();
         };
 
         _floatingTalkForm = new FloatingTalkForm(StartCaptureFromFloatingButton, StopBridgeRecording, ShowDashboard);
-        _trayController = new TrayController(this);
 
-        _holdButton = new Button
-        {
-            Text = "按住这里说话，松开结束",
-            Width = 250,
-            Height = 48,
-            BackColor = Color.FromArgb(20, 130, 80),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat
-        };
-        _holdButton.MouseDown += (_, e) =>
-        {
-            if (e.Button != MouseButtons.Left) return;
-            _holdButton.Capture = true;
-            BeginWechatShortcut();
-        };
-        _holdButton.MouseUp += (_, e) =>
-        {
-            if (e.Button != MouseButtons.Left) return;
-            EndWechatShortcut();
-            _holdButton.Capture = false;
-        };
-        _holdButton.MouseCaptureChanged += (_, _) =>
-        {
-            if (_shortcutHeld && Control.MouseButtons == MouseButtons.None)
-                EndWechatShortcut();
-        };
-
-        var focusButton = new Button
-        {
-            Text = "仅聚焦接收框",
-            Width = 170,
-            Height = 48
-        };
-        focusButton.Click += (_, _) =>
-        {
-            Activate();
-            _captureBox.Focus();
-            _status.Text = "接收框已获得焦点。现在请亲自按住 Ctrl+Win 说话。";
-            _status.ForeColor = Color.DarkBlue;
-        };
-
-        var clearButton = new Button
-        {
-            Text = "清空结果",
-            Width = 120,
-            Height = 48
-        };
-        clearButton.Click += (_, _) =>
-        {
-            _captureBox.Clear();
-            _captureBox.Focus();
-        };
-
-        var copyButton = new Button
-        {
-            Text = "复制结果",
-            Width = 100,
-            Height = 48
-        };
-        copyButton.Click += (_, _) =>
-        {
-            if (_captureBox.TextLength == 0)
-            {
-                _status.Text = "接收框里还没有可复制的文字。";
-                _status.ForeColor = Color.DarkOrange;
-                return;
-            }
-
-            try
-            {
-                Clipboard.SetDataObject(_captureBox.Text, true);
-                _status.Text = $"已重新复制 {_captureBox.TextLength} 个字符，可以手动切换到目标窗口粘贴。";
-                _status.ForeColor = Color.DarkGreen;
-            }
-            catch (ExternalException ex)
-            {
-                _status.Text = $"复制结果失败：{ex.Message}";
-                _status.ForeColor = Color.DarkRed;
-            }
-        };
-
-        var buttonRow = new FlowLayoutPanel
+        var menuStrip = new MenuStrip
         {
             Dock = DockStyle.Top,
-            Height = 66,
-            Padding = new Padding(14, 8, 14, 6),
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false
+            BackColor = Color.FromArgb(246, 248, 250),
+            Font = new Font("Microsoft YaHei UI", 9F)
         };
-        buttonRow.Controls.AddRange([_holdButton, focusButton, clearButton, copyButton]);
+
+        var updateItem = new ToolStripMenuItem("检查更新(&U)...");
+        updateItem.Click += async (_, _) =>
+        {
+            await AppUpdater.CheckForUpdatesAsync(this, silentIfLatest: false);
+        };
+
+        var helpMenu = new ToolStripMenuItem("帮助(&H)");
+        var githubItem = new ToolStripMenuItem("访问 GitHub 仓库");
+        githubItem.Click += (_, _) =>
+        {
+            AppUpdater.OpenBrowser("https://github.com/lsby/wechat-dictation-bridge");
+        };
+        var aboutItem = new ToolStripMenuItem("关于");
+        aboutItem.Click += (_, _) =>
+        {
+            MessageBox.Show(
+                this,
+                $"微信语音桥 v{Application.ProductVersion}\r\n\r\n基于微信听写跳板机制，支持将微信语音输入结果自动转发回填到远控（如悠悠远程、ToDesk）与本地目标窗口。",
+                "关于 微信语音桥",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        };
+
+        helpMenu.DropDownItems.Add(githubItem);
+        helpMenu.DropDownItems.Add(aboutItem);
+
+        menuStrip.Items.Add(updateItem);
+        menuStrip.Items.Add(helpMenu);
 
         var textHost = new Panel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(14, 4, 14, 8)
+            Padding = new Padding(16, 4, 16, 6),
+            BackColor = Color.FromArgb(246, 248, 250)
         };
         textHost.Controls.Add(_captureBox);
 
         Controls.Add(textHost);
-        Controls.Add(_stats);
-        Controls.Add(_status);
-        Controls.Add(buttonRow);
-        Controls.Add(_instructions);
+        Controls.Add(bottomPanel);
+        Controls.Add(topPanel);
+        Controls.Add(menuStrip);
     }
 
     protected override void OnShown(EventArgs e)
@@ -233,17 +201,14 @@ internal sealed class ProbeForm : Form
         _hotkeyRegistered = TryRegisterBridgeHotkey();
         if (_hotkeyRegistered)
         {
-            _status.Text = $"全局桥接键 {_bridgeHotkeyDisplay} 已注册。可以进行远控窗口自动回填测试。";
+            _status.Text = $"就绪：全局热键 {_bridgeHotkeyDisplay} 或按住右上角悬浮按钮听写。";
             _status.ForeColor = Color.DarkGreen;
-            _instructions.Text += $"\r\n当前桥接热键：{_bridgeHotkeyDisplay}";
         }
         else
         {
-            _status.Text = $"候选热键全部注册失败。最后一个 Win32 错误：{Marshal.GetLastWin32Error()}。";
-            _status.ForeColor = Color.DarkRed;
+            _status.Text = "热键注册失败，请直接使用右上角绿色悬浮按钮听写。";
+            _status.ForeColor = Color.DarkOrange;
         }
-
-        _instructions.Text += "\r\n焦点跳板：按住右上角悬浮按钮听写；识别后主窗口保持显示，并回到原窗口粘贴。";
     }
 
     private bool TryRegisterBridgeHotkey()
@@ -529,7 +494,6 @@ internal sealed class ProbeForm : Form
 
     private void OnFormClosing(object? sender, CancelEventArgs e)
     {
-        _trayController.Dispose();
         _floatingTalkForm.Close();
         if (_hotkeyRegistered)
         {
@@ -672,8 +636,15 @@ internal sealed class FloatingTalkForm : Form
     private readonly Action _onStop;
     private readonly Action _onShowDashboard;
     private readonly System.Windows.Forms.Timer _releasePollTimer;
+    private readonly System.Windows.Forms.Timer _holdCheckTimer;
+    private readonly ToolTip _toolTip;
+
     private bool _pressed;
     private bool _recording;
+    private bool _isMouseDown;
+    private Point _mousePressScreenPos;
+    private Point _formStartPos;
+    private bool _hasDraggedAway;
 
     public FloatingTalkForm(Action onStart, Action onStop, Action onShowDashboard)
     {
@@ -685,19 +656,49 @@ internal sealed class FloatingTalkForm : Form
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
-        ClientSize = new Size(184, 52);
+        ClientSize = new Size(76, 76);
         Cursor = Cursors.Hand;
         DoubleBuffered = true;
 
-        _releasePollTimer = new System.Windows.Forms.Timer { Interval = 50 };
+        UpdateCircleRegion();
+
+        _toolTip = new ToolTip
+        {
+            InitialDelay = 500,
+            ReshowDelay = 200,
+            AutoPopDelay = 6000
+        };
+        _toolTip.SetToolTip(this, "按住说话，松手输入\n拖拽可任意换位置\n右键点击打开面板");
+
+        _releasePollTimer = new System.Windows.Forms.Timer { Interval = 40 };
         _releasePollTimer.Tick += (_, _) =>
         {
             if (_pressed && Control.MouseButtons == MouseButtons.None)
                 FinishPress();
         };
 
+        // 180ms 按住防抖计时器：只有按住超过 180ms 且未大幅拖动，才真正进入录音听写，避免拖拽时误弹主界面
+        _holdCheckTimer = new System.Windows.Forms.Timer { Interval = 180 };
+        _holdCheckTimer.Tick += (_, _) =>
+        {
+            _holdCheckTimer.Stop();
+            if (_isMouseDown && !_hasDraggedAway && !_pressed)
+            {
+                _pressed = true;
+                _releasePollTimer.Start();
+                _onStart();
+            }
+        };
+
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
-        Location = new Point(area.Right - Width - 24, area.Top + 72);
+        Location = new Point(area.Right - Width - 28, area.Top + 68);
+    }
+
+    private void UpdateCircleRegion()
+    {
+        using var path = new GraphicsPath();
+        path.AddEllipse(0, 0, Width, Height);
+        Region = new Region(path);
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -721,42 +722,159 @@ internal sealed class FloatingTalkForm : Form
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        var color = _recording ? Color.FromArgb(200, 55, 55) : Color.FromArgb(20, 145, 85);
-        using var background = new SolidBrush(color);
-        using var border = new Pen(Color.White, 2);
-        using var font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
-        e.Graphics.FillRectangle(background, ClientRectangle);
-        e.Graphics.DrawRectangle(border, 1, 1, Width - 3, Height - 3);
-        var text = _recording ? "微信听写中，松开结束" : "按住说话｜右键看状态";
-        TextRenderer.DrawText(
-            e.Graphics,
-            text,
-            font,
-            ClientRectangle,
-            Color.White,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+        // 绘制球体背景渐变
+        var circleBounds = new Rectangle(0, 0, Width - 1, Height - 1);
+        var topColor = _recording ? Color.FromArgb(244, 63, 94) : Color.FromArgb(16, 185, 129);
+        var bottomColor = _recording ? Color.FromArgb(225, 29, 72) : Color.FromArgb(5, 150, 105);
+
+        using (var brush = new LinearGradientBrush(circleBounds, topColor, bottomColor, LinearGradientMode.Vertical))
+        {
+            g.FillEllipse(brush, circleBounds);
+        }
+
+        // 内高光环，增强立体质感
+        using (var ringPen = new Pen(Color.FromArgb(120, 255, 255, 255), 1.5f))
+        {
+            g.DrawEllipse(ringPen, 2, 2, Width - 5, Height - 5);
+        }
+
+        if (_recording)
+        {
+            // 录音状态：绘制科技感声波律动线条
+            using var wavePen = new Pen(Color.White, 2.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            int cx = Width / 2;
+            int cy = 25;
+            g.DrawLine(wavePen, cx - 14, cy - 3, cx - 14, cy + 3);
+            g.DrawLine(wavePen, cx - 7, cy - 8, cx - 7, cy + 8);
+            g.DrawLine(wavePen, cx, cy - 12, cx, cy + 12);
+            g.DrawLine(wavePen, cx + 7, cy - 8, cx + 7, cy + 8);
+            g.DrawLine(wavePen, cx + 14, cy - 3, cx + 14, cy + 3);
+
+            // 录音文字
+            using var font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
+            var textRect = new Rectangle(0, 44, Width, 22);
+            TextRenderer.DrawText(
+                g,
+                "松手发送",
+                font,
+                textRect,
+                Color.White,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.NoPadding);
+        }
+        else
+        {
+            // 常态：纯矢量手工绘制高清晰极简麦克风图标 (绝不失真/不偏色)
+            int cx = Width / 2;
+            int cy = 25;
+
+            using var whiteBrush = new SolidBrush(Color.White);
+            using var whitePen = new Pen(Color.White, 2.2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+
+            // 1. 麦克风胶囊头 (宽 10, 高 16)
+            var micHeadRect = new Rectangle(cx - 5, cy - 10, 10, 15);
+            using var micPath = new GraphicsPath();
+            micPath.AddArc(micHeadRect.X, micHeadRect.Y, micHeadRect.Width, micHeadRect.Width, 180, 180);
+            micPath.AddArc(micHeadRect.X, micHeadRect.Bottom - micHeadRect.Width, micHeadRect.Width, micHeadRect.Width, 0, 180);
+            micPath.CloseFigure();
+            g.FillPath(whiteBrush, micPath);
+
+            // 2. 麦克风弧形托架
+            g.DrawArc(whitePen, cx - 9, cy - 5, 18, 14, 0, 180);
+
+            // 3. 支柱与底座
+            g.DrawLine(whitePen, cx, cy + 9, cx, cy + 14);
+            g.DrawLine(whitePen, cx - 6, cy + 14, cx + 6, cy + 14);
+
+            // 常态文字：安全内收，绝不切边
+            using var font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
+            var textRect = new Rectangle(0, 44, Width, 22);
+            TextRenderer.DrawText(
+                g,
+                "按住说",
+                font,
+                textRect,
+                Color.White,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.NoPadding);
+        }
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
-        if (e.Button != MouseButtons.Left || _pressed) return;
-        _pressed = true;
+
+        _mousePressScreenPos = Cursor.Position;
+        _formStartPos = Location;
+        _hasDraggedAway = false;
+        _isMouseDown = true;
         Capture = true;
-        _releasePollTimer.Start();
-        _onStart();
+
+        if (e.Button == MouseButtons.Left && !_pressed)
+        {
+            // 启动防抖计时器，等待判断是拖动还是真按住说话，绝不提前弹出主界面！
+            _holdCheckTimer.Start();
+        }
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+
+        if (!_isMouseDown) return;
+
+        var cur = Cursor.Position;
+        var dx = cur.X - _mousePressScreenPos.X;
+        var dy = cur.Y - _mousePressScreenPos.Y;
+
+        // 只要位移超过 5 像素，立即锁定为拖动模式！
+        if (!_hasDraggedAway && (Math.Abs(dx) > 5 || Math.Abs(dy) > 5))
+        {
+            _hasDraggedAway = true;
+            _holdCheckTimer.Stop(); // 彻底掐死说话触发，绝不惊动主界面！
+
+            if (_pressed)
+            {
+                _pressed = false;
+                _releasePollTimer.Stop();
+                _onStop();
+            }
+        }
+
+        if (_hasDraggedAway)
+        {
+            Location = new Point(_formStartPos.X + dx, _formStartPos.Y + dy);
+        }
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+
+        _holdCheckTimer.Stop();
+        Capture = false;
+        _isMouseDown = false;
+
+        // 如果用户只是拖动换位置，松手即停，不触发任何输入或面板弹出
+        if (_hasDraggedAway)
+        {
+            _hasDraggedAway = false;
+            return;
+        }
+
+        // 原地松手
         if (e.Button == MouseButtons.Right)
         {
             _onShowDashboard();
             return;
         }
-        if (e.Button != MouseButtons.Left || !_pressed) return;
-        FinishPress();
+
+        if (e.Button == MouseButtons.Left && _pressed)
+        {
+            FinishPress();
+        }
     }
 
     protected override void OnMouseCaptureChanged(EventArgs e)
@@ -772,7 +890,6 @@ internal sealed class FloatingTalkForm : Form
         _pressed = false;
         _releasePollTimer.Stop();
         _onStop();
-        Capture = false;
     }
 
     protected override void WndProc(ref Message message)

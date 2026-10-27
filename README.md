@@ -1,4 +1,4 @@
-# 微信语音桥（Dictation Bridge）
+﻿# 微信语音桥（Dictation Bridge）
 
 微信语音桥是一款 Windows 小工具，用于将本机微信的语音听写结果输入到远程桌面、远程控制软件或其他本地应用的文本框中。
 
