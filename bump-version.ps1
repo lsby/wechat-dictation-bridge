@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Bump project version and optionally commit and push to trigger GitHub Release.
 #>
@@ -64,7 +64,8 @@ Write-Host "Updated $projectPath" -ForegroundColor Green
 # 2. Update README.md
 if (Test-Path $readmePath) {
     $readmeContent = [System.IO.File]::ReadAllText($readmePath, [System.Text.Encoding]::UTF8)
-    $updatedReadme = [System.Text.RegularExpressions.Regex]::Replace($readmeContent, '(?m)(^当前版本：`)[^`]+(`)', "`$1$newVersion`$2")
+    $replacement = [char]0x60 + $newVersion + [char]0x60
+    $updatedReadme = [System.Text.RegularExpressions.Regex]::Replace($readmeContent, '\x60\d+\.\d+\.\d+\x60', $replacement)
     [System.IO.File]::WriteAllText($readmePath, $updatedReadme, [System.Text.Encoding]::UTF8)
     Write-Host "Updated $readmePath" -ForegroundColor Green
 }
