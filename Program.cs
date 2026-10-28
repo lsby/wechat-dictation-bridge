@@ -7,9 +7,48 @@ namespace WechatDictationProbe;
 
 internal static class Program
 {
+    private const string SingleInstanceMutexName = @"Local\WechatDictationBridge_SingleInstance_Mutex_9F8E7D6C";
+    internal const string ShowInstanceMessageName = "WechatDictationBridge_ShowExistingInstance_9F8E7D6C";
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern uint RegisterWindowMessage(string lpString);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    private const int HwndBroadcast = 0xFFFF;
+
     [STAThread]
     private static void Main()
     {
+        using var mutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out bool isNewInstance);
+        bool hasAcquired = isNewInstance;
+
+        if (!hasAcquired)
+        {
+            // 等待短暂时间（例如 1.5 秒），防止自动更新替换重启时旧进程尚未完全退出的短暂交叠
+            try
+            {
+                hasAcquired = mutex.WaitOne(TimeSpan.FromMilliseconds(1500), false);
+            }
+            catch (AbandonedMutexException)
+            {
+                hasAcquired = true;
+            }
+        }
+
+        if (!hasAcquired)
+        {
+            // 已有实例在运行，发送广播通知已有实例激活其面板
+            uint msg = RegisterWindowMessage(ShowInstanceMessageName);
+            if (msg != 0)
+            {
+                PostMessage((IntPtr)HwndBroadcast, msg, IntPtr.Zero, IntPtr.Zero);
+            }
+            return;
+        }
+
         try
         {
             AppUpdater.CleanupOldBackups();
@@ -20,6 +59,20 @@ internal static class Program
         {
             File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "crash.log"), ex.ToString());
             MessageBox.Show(ex.ToString(), "启动异常");
+        }
+        finally
+        {
+            if (hasAcquired)
+            {
+                try
+                {
+                    mutex.ReleaseMutex();
+                }
+                catch
+                {
+                    // 忽略退出时释放异常
+                }
+            }
         }
     }
 }
@@ -37,6 +90,7 @@ internal sealed class ProbeForm : Form
     private readonly Label _status;
     private readonly Label _stats;
     private readonly FloatingTalkForm _floatingTalkForm;
+    private static readonly uint WmShowExistingInstance = RegisterWindowMessage(Program.ShowInstanceMessageName);
     private bool _shortcutHeld;
     private bool _bridgeRecording;
     private DateTime _lastTextChange;
@@ -187,6 +241,7 @@ internal sealed class ProbeForm : Form
         base.OnShown(e);
         _captureBox.Focus();
         _floatingTalkForm.Show();
+        _floatingTalkForm.EnsureTopMost();
         _status.Text = "就绪：按住屏幕上的悬浮按钮开始说话。";
         _status.ForeColor = Color.FromArgb(5, 150, 105);
     }
@@ -210,6 +265,7 @@ internal sealed class ProbeForm : Form
         _captureBox.Focus();
         _captureBox.Clear();
         Application.DoEvents();
+        _floatingTalkForm.EnsureTopMost();
         BeginWechatShortcut();
         _bridgeRecording = _shortcutHeld;
 
@@ -226,10 +282,24 @@ internal sealed class ProbeForm : Form
         }
     }
 
+    private void WakeUpDashboard()
+    {
+        if (WindowState == FormWindowState.Minimized)
+        {
+            WindowState = FormWindowState.Normal;
+        }
+        Show();
+        BringToFront();
+        Activate();
+        ForceForegroundWindow(Handle);
+        _floatingTalkForm.EnsureTopMost();
+        _status.Text = "检测到重复打开程序，已切换至当前运行窗口。";
+        _status.ForeColor = Color.FromArgb(5, 150, 105);
+    }
+
     private void ShowDashboard()
     {
-        Show();
-        Activate();
+        WakeUpDashboard();
     }
 
     private void StopBridgeRecording()
@@ -405,6 +475,17 @@ internal sealed class ProbeForm : Form
         _captureBox.Focus();
     }
 
+    protected override void WndProc(ref Message m)
+    {
+        if (WmShowExistingInstance != 0 && (uint)m.Msg == WmShowExistingInstance)
+        {
+            WakeUpDashboard();
+            return;
+        }
+
+        base.WndProc(ref m);
+    }
+
     private void OnFormClosing(object? sender, CancelEventArgs e)
     {
         _floatingTalkForm.Close();
@@ -434,6 +515,9 @@ internal sealed class ProbeForm : Form
 
     private static uint SendKeyboardInputs(params INPUT[] inputs) =>
         SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern uint RegisterWindowMessage(string lpString);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint numberOfInputs, INPUT[] inputs, int sizeOfInputStructure);
@@ -529,14 +613,39 @@ internal sealed class FloatingTalkForm : Form
 {
     private const int WsExToolWindow = 0x00000080;
     private const int WsExNoActivate = 0x08000000;
+    private const int WsExTopMost = 0x00000008;
     private const int WmMouseActivate = 0x0021;
+    private const int WmWindowPosChanging = 0x0046;
     private const int MaNoActivate = 3;
+
+    private static readonly IntPtr HwndTopMost = new IntPtr(-1);
+    private const uint SwpNosize = 0x0001;
+    private const uint SwpNomove = 0x0002;
+    private const uint SwpNoactivate = 0x0010;
+    private const uint SwpShowwindow = 0x0040;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WINDOWPOS
+    {
+        public IntPtr hwnd;
+        public IntPtr hwndInsertAfter;
+        public int x;
+        public int y;
+        public int cx;
+        public int cy;
+        public uint flags;
+    }
 
     private readonly Action _onStart;
     private readonly Action _onStop;
     private readonly Action _onShowDashboard;
     private readonly System.Windows.Forms.Timer _releasePollTimer;
     private readonly System.Windows.Forms.Timer _holdCheckTimer;
+    private readonly System.Windows.Forms.Timer _topMostGuardTimer;
     private readonly ToolTip _toolTip;
 
     private bool _pressed;
@@ -590,6 +699,17 @@ internal sealed class FloatingTalkForm : Form
             }
         };
 
+        // 800ms 置顶守护定时器：防止被其他全屏远控、任务管理器或第三方置顶窗口挤下 Z 序层级
+        _topMostGuardTimer = new System.Windows.Forms.Timer { Interval = 800 };
+        _topMostGuardTimer.Tick += (_, _) =>
+        {
+            if (Visible)
+            {
+                EnsureTopMost();
+            }
+        };
+        _topMostGuardTimer.Start();
+
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
         Location = new Point(area.Right - Width - 28, area.Top + 68);
     }
@@ -608,8 +728,37 @@ internal sealed class FloatingTalkForm : Form
         get
         {
             var parameters = base.CreateParams;
-            parameters.ExStyle |= WsExToolWindow | WsExNoActivate;
+            parameters.ExStyle |= WsExToolWindow | WsExNoActivate | WsExTopMost;
             return parameters;
+        }
+    }
+
+    public void EnsureTopMost()
+    {
+        if (IsHandleCreated && !IsDisposed)
+        {
+            SetWindowPos(Handle, HwndTopMost, 0, 0, 0, 0, SwpNomove | SwpNosize | SwpNoactivate | SwpShowwindow);
+        }
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        EnsureTopMost();
+    }
+
+    protected override void OnLocationChanged(EventArgs e)
+    {
+        base.OnLocationChanged(e);
+        EnsureTopMost();
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (Visible)
+        {
+            EnsureTopMost();
         }
     }
 
@@ -761,6 +910,7 @@ internal sealed class FloatingTalkForm : Form
         if (_hasDraggedAway)
         {
             _hasDraggedAway = false;
+            EnsureTopMost();
             return;
         }
 
@@ -790,6 +940,7 @@ internal sealed class FloatingTalkForm : Form
         _pressed = false;
         _releasePollTimer.Stop();
         _onStop();
+        EnsureTopMost();
     }
 
     protected override void WndProc(ref Message message)
@@ -800,6 +951,32 @@ internal sealed class FloatingTalkForm : Form
             return;
         }
 
+        if (message.Msg == WmWindowPosChanging)
+        {
+            try
+            {
+                var pos = Marshal.PtrToStructure<WINDOWPOS>(message.LParam);
+                pos.hwndInsertAfter = HwndTopMost;
+                Marshal.StructureToPtr(pos, message.LParam, false);
+            }
+            catch
+            {
+                // 忽略转换异常
+            }
+        }
+
         base.WndProc(ref message);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _releasePollTimer.Dispose();
+            _holdCheckTimer.Dispose();
+            _topMostGuardTimer.Dispose();
+            _toolTip.Dispose();
+        }
+        base.Dispose(disposing);
     }
 }
